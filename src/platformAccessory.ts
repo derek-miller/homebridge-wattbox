@@ -16,7 +16,10 @@ export class WattBoxOutletPlatformAccessory {
     private readonly platform: WattBoxHomebridgePlatform,
     private readonly accessory: PlatformAccessory,
   ) {
-    this.accessory.getService(this.platform.Service.Outlet)!
+    (
+      this.accessory.getService(this.outlet.name) ||
+      this.accessory.addService(this.platform.Service.Outlet, this.outlet.name)
+    )
       .setCharacteristic(this.platform.Characteristic.Name, this.outlet.name)
       .getCharacteristic(this.platform.Characteristic.On)
       .onSet(this.setOn.bind(this))
