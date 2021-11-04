@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "WattBox",
   "pluginType": "platform",
   "singular": true,
   "schema": {
@@ -8,8 +8,29 @@
       "name": {
         "title": "Name",
         "type": "string",
+        "default": "WattBox",
+        "required": true
+      },
+      "address": {
+        "title": "WattBox Address",
+        "type": "string",
+        "default": "192.168.1.100",
+        "required": true
+      },
+      "username": {
+        "title": "User Name",
+        "type": "string",
+        "default": "wattbox",
+        "required": true
+      },
+      "password": {
+        "title": "Password",
+        "type": "string",
+        "default": "wattbox",
         "required": true,
-        "default": "Example Dynamic Platform"
+        "options": {
+          "hidden": true
+        }
       }
     }
   }
