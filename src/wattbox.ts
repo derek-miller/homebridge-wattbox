@@ -1,24 +1,35 @@
 import xml2js from 'xml2js';
-import {Logger} from 'homebridge';
+import PubSub from 'pubsub-js';
+import { Logger } from 'homebridge';
 
-import axios, {AxiosInstance, AxiosRequestConfig, AxiosResponse} from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import * as http from 'http';
 import AsyncLock from 'async-lock';
+import EventEmitter from 'events';
+import Token = PubSubJS.Token;
 
 export interface WattBoxStatus {
-  hostname: string;
-  model: string;
-  serialNumber: string;
-  connectionStatuses: WattBoxConnectionStatus[];
-  autoRebootEnabled: boolean;
-  outletInfos: WattBoxOutletInfo[];
-  // TODO: led
+  information: WattBoxInformation;
+  autoReboot: WattBoxAutoReboot;
+  outlets: WattBoxOutlet[];
+  leds: WattBoxLEDs;
   safeVoltageStatus: WattBoxSafeVoltageStatus;
   voltage: number;
   current: number;
   power: number;
   cloudOnline: boolean;
-  ups: WattBoxUpsStatus | null;
+  ups: WattBoxUPS | null;
+}
+
+export interface WattBoxInformation {
+  hostname: string;
+  model: string;
+  serialNumber: string;
+}
+
+export interface WattBoxAutoReboot {
+  enabled: boolean;
+  connections: WattBoxConnectionStatus[];
 }
 
 export interface WattBoxConnectionStatus {
@@ -30,35 +41,37 @@ export interface WattBoxConnectionStatus {
 export interface WattBoxOutlet {
   id: string;
   name: string;
-}
-
-export interface WattBoxOutletInfo {
-  outlet: WattBoxOutlet;
   status: WattBoxOutletStatus;
   mode: WattBoxOutletMode;
 }
 
 export enum WattBoxOutletStatus {
+  UNKNOWN = -1,
   OFF = 0,
-  ON = 1
+  ON = 1,
 }
 
 export enum WattBoxOutletMode {
   DISABLED = 0,
   NORMAL = 1,
-  RESET_ONLY = 2
+  RESET_ONLY = 2,
 }
 
-// TODO
-// enum WattBoxLedStatus {
-//   OFF = 0,
-//   GREEN_ON = 1,
-//   RED_ON = 2,
-//   GREEN_BLINKING = 3,
-//   RED_BLINKING = 4,
-// }
+export interface WattBoxLEDs {
+  internet: WattBoxLedStatus;
+  system: WattBoxLedStatus;
+  autoReboot: WattBoxLedStatus;
+}
 
-enum WattBoxSafeVoltageStatus {
+export enum WattBoxLedStatus {
+  OFF = 0,
+  GREEN_ON = 1,
+  RED_ON = 2,
+  GREEN_BLINKING = 3,
+  RED_BLINKING = 4,
+}
+
+export enum WattBoxSafeVoltageStatus {
   OFF = 0,
   SAFE = 1,
   UNSAFE = 2,
@@ -72,7 +85,7 @@ export enum WattBoxOutletAction {
   AUTO_REBOOT_OFF = 5,
 }
 
-export interface WattBoxUpsStatus {
+export interface WattBoxUPS {
   audibleAlarmEnabled: boolean;
   estRunTimeMinutes: number;
   batteryTestEnabled: boolean;
@@ -84,12 +97,21 @@ export interface WattBoxUpsStatus {
 }
 
 export class WattBox {
-  private static STATUS_TTL_MS = 5000;
+  private static readonly PUB_SUB_OUTLET_TOPIC = 'outlet';
+  private static readonly STATUS_CACHE_TTL_MS = 5000;
 
-  private session: AxiosInstance;
+  // Events
+  private static readonly POLL: string = 'POLL';
+  private static readonly STATUS_LOCK_NAME = 'STATUS';
+  private static readonly STATUS_UPDATE = 'STATUS_UPDATE';
+  private static readonly TRIGGER_STATUS_UPDATE = 'TRIGGER_STATUS_UPDATE';
+
   private lock: AsyncLock = new AsyncLock();
-  private lastStatus: WattBoxStatus | null = null;
-  private lastStatusTime: Date = new Date();
+  private session: AxiosInstance;
+  private emitter: EventEmitter = new EventEmitter();
+  private cachedStatus: WattBoxStatus | null = null;
+  private cachedStatusError: Error | null = null;
+  private outletIdSubscriptions: Record<Token, string> = {};
 
   constructor(
     public readonly log: Logger,
@@ -98,85 +120,176 @@ export class WattBox {
     private readonly password: string,
   ) {
     this.session = axios.create({
-      httpAgent: new http.Agent({keepAlive: true}),
+      httpAgent: new http.Agent({ keepAlive: true }),
       baseURL: this.address,
       responseType: 'document',
       timeout: 5000,
       headers: {
-        Authorization: `Basic ${Buffer.from(`${this.username}:${this.password}`).toString('base64')}`,
+        Authorization: `Basic ${Buffer.from(`${this.username}:${this.password}`).toString(
+          'base64',
+        )}`,
       },
+    });
+    this.emitter.on(WattBox.POLL, async () => {
+      if (PubSub.countSubscriptions(WattBox.PUB_SUB_OUTLET_TOPIC) === 0) {
+        this.log.debug('[API] There are no outlet status subscriptions; skipping poll');
+        return;
+      }
+      try {
+        await this.getStatus();
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          this.log.error('[API] An error occurred polling for a status update; %s', error.message);
+        }
+      }
+    });
+    this.emitter.on(WattBox.TRIGGER_STATUS_UPDATE, () => {
+      this.cachedStatusError = null;
+      this.cachedStatus = null;
+      this.emitter.emit(WattBox.POLL);
+    });
+    this.emitter.on(WattBox.STATUS_UPDATE, (error, status) => {
+      // Trigger a status update after the ttl expires.
+      setTimeout(
+        () => this.emitter.emit(WattBox.TRIGGER_STATUS_UPDATE),
+        WattBox.STATUS_CACHE_TTL_MS,
+      );
+
+      if (status) {
+        // Publish status updates to each of the outlet subscriptions.
+        for (const outlet of status.outlets) {
+          PubSub.publish(`${WattBox.PUB_SUB_OUTLET_TOPIC}.${outlet.id}`, outlet);
+        }
+      }
     });
   }
 
+  subscribe(outletId: string, func: (outlet: WattBoxOutlet) => void): Token {
+    this.log.debug('[API] Status subscription added for outlet %s', outletId);
+    const token = PubSub.subscribe(
+      `${WattBox.PUB_SUB_OUTLET_TOPIC}.${outletId}`,
+      async (_, data) => {
+        if (!data) {
+          return;
+        }
+        return func(data);
+      },
+    );
+    this.outletIdSubscriptions[token] = outletId;
+
+    // Trigger a poll to get updated status for the new subscription.
+    this.emitter.emit(WattBox.POLL);
+
+    return token;
+  }
+
+  unsubscribe(token: Token): void {
+    if (token in this.outletIdSubscriptions) {
+      this.log.debug('[API] Status subscription removed for outlet %s', token);
+    }
+    PubSub.unsubscribe(token);
+  }
+
   async getStatus(): Promise<WattBoxStatus> {
-    return this.lock.acquire('getStatus', async () => {
-      if (!this.lastStatus || (new Date().getTime() - this.lastStatusTime.getTime()) > WattBox.STATUS_TTL_MS) {
-        const {request} = await this.xmlRequest<WattBoxInfoResponse>({method: 'get', url: '/wattbox_info.xml'});
-        this.lastStatusTime = new Date();
-        this.lastStatus = {
-          hostname: request.host_name,
-          model: request.hardware_version,
-          serialNumber: request.serial_number,
-          connectionStatuses: request.site_ip.map((ip, i) => ({
-            targetIp: ip,
-            responseTimeMs: parseInt(request.connect_status[i]),
-            timeoutPercent: parseInt(request.site_lost[i]),
-          })).filter(({targetIp}) => targetIp !== '0'),
-          autoRebootEnabled: request.auto_reboot === '1',
-          outletInfos: request.outlet_name.map((name, i) => ({
-            outlet: {
-              id: `${i + 1}`,
-              name,
-            },
+    return this.lock.acquire(WattBox.STATUS_LOCK_NAME, async (): Promise<WattBoxStatus> => {
+      // Return/Throw cached status
+      if (this.cachedStatusError) {
+        throw this.cachedStatusError;
+      } else if (this.cachedStatus) {
+        return this.cachedStatus;
+      }
+
+      this.log.debug('[API] Fetching status from WattBox API');
+      let request: WattBoxInfoResponseBody;
+      try {
+        ({ request } = await this.xmlRequest<WattBoxInfoResponse>({
+          method: 'get',
+          url: '/wattbox_info.xml',
+        }));
+        this.cachedStatusError = null;
+        this.cachedStatus = {
+          information: {
+            hostname: request.host_name,
+            model: request.hardware_version,
+            serialNumber: request.serial_number,
+          },
+          autoReboot: {
+            enabled: request.auto_reboot === '1',
+            connections: request.site_ip
+              .map((ip, i) => ({
+                targetIp: ip,
+                responseTimeMs: parseInt(request.connect_status[i]),
+                timeoutPercent: parseInt(request.site_lost[i]),
+              }))
+              .filter(({ targetIp }) => targetIp !== '0'),
+          },
+          outlets: request.outlet_name.map((name, i) => ({
+            id: `${i + 1}`,
+            name,
             status: parseInt(request.outlet_status[i]),
             mode: parseInt(request.outlet_method[i]),
           })),
+          leds: {
+            internet: parseInt(request.led_status[0]),
+            system: parseInt(request.led_status[1]),
+            autoReboot: parseInt(request.led_status[2]),
+          },
           safeVoltageStatus: parseInt(request.safe_voltage_status),
           voltage: parseInt(request.voltage_value) / 10.0,
           current: parseInt(request.current_value) / 10.0,
           power: parseInt(request.power_value) / 10.0,
           cloudOnline: request.cloud_status === '1',
-          ups: request.hasUPS === '0' ? null : {
-            audibleAlarmEnabled: request.audible_alarm === '1',
-            estRunTimeMinutes: parseInt(request.est_run_time),
-            batteryTestEnabled: request.battery_test === '1',
-            batteryHealthy: request.battery_health === '1',
-            batteryChargePercent: parseInt(request.battery_charge),
-            batteryLoadPercent: parseInt(request.battery_load),
-            onBattery: request.power_lost === '1',
-            isMuted: request.mute === '1',
-          },
+          ups:
+            request.hasUPS === '0'
+              ? null
+              : {
+                  audibleAlarmEnabled: request.audible_alarm === '1',
+                  estRunTimeMinutes: parseInt(request.est_run_time),
+                  batteryTestEnabled: request.battery_test === '1',
+                  batteryHealthy: request.battery_health === '1',
+                  batteryChargePercent: parseInt(request.battery_charge),
+                  batteryLoadPercent: parseInt(request.battery_load),
+                  onBattery: request.power_lost === '1',
+                  isMuted: request.mute === '1',
+                },
         };
+        return this.cachedStatus;
+      } catch (error: unknown) {
+        this.cachedStatusError = <Error>error;
+        this.cachedStatus = null;
+        throw error;
+      } finally {
+        this.emitter.emit(WattBox.STATUS_UPDATE, this.cachedStatusError, this.cachedStatus);
       }
-      return this.lastStatus;
     });
   }
 
-  async getOutletStatus(outlet: WattBoxOutlet): Promise<WattBoxOutletInfo> {
-    const {outletInfos} = await this.getStatus();
-    const outletInfo = outletInfos.find(({outlet: {id}}) => id === outlet.id) ?? null;
+  async getOutletStatus(outletId: string): Promise<WattBoxOutlet> {
+    const { outlets } = await this.getStatus();
+    const outletInfo = outlets.find(({ id }) => id === outletId) ?? null;
     if (outletInfo === null) {
-      throw new Error(`unknown outlet [name: "${outlet.name ?? ''}", id: ${outlet.id}]`);
+      throw new Error(`unknown outlet with id=${outletId}`);
     }
     return outletInfo;
   }
 
-  async commandOutlet(outlet: WattBoxOutlet, command: WattBoxOutletAction): Promise<void> {
-    return this.lock.acquire('getStatus', async () => {
+  async commandOutlet(outletId: string, command: WattBoxOutletAction): Promise<void> {
+    return this.lock.acquire(WattBox.STATUS_LOCK_NAME, async () => {
       await this.xmlRequest({
         method: 'get',
         url: '/control.cgi',
         params: {
-          outlet: outlet.id,
+          outlet: outletId,
           command,
         },
       });
-      this.lastStatus = null;
+      // Trigger an update to pick up any changes.
+      this.emitter.emit(WattBox.TRIGGER_STATUS_UPDATE);
     });
   }
 
   private async xmlRequest<T = never, D = never>(config: AxiosRequestConfig<D>): Promise<T> {
-    const {data} = <AxiosResponse<T>>await this.session.request(config);
+    const { data } = <AxiosResponse<T>>await this.session.request(config);
     return parser.parseStringPromise(data);
   }
 }
@@ -184,17 +297,18 @@ export class WattBox {
 const parser = new xml2js.Parser({
   explicitArray: false,
   valueProcessors: [
+    // Split comma delimited strings
     (value) => {
-      return value.includes(',') ? value.split(',').map(v => v.trim()) : value;
+      return value.includes(',') ? value.split(',').map((v) => v.trim()) : value;
     },
   ],
 });
 
 interface WattBoxInfoResponse {
-  request: WattBoxInfo;
+  request: WattBoxInfoResponseBody;
 }
 
-interface WattBoxInfo {
+interface WattBoxInfoResponseBody {
   host_name: string;
   hardware_version: string;
   serial_number: string;

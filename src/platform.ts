@@ -8,10 +8,13 @@ import {
   Service,
 } from 'homebridge';
 
-import {PLATFORM_NAME, PLUGIN_NAME} from './settings';
-import {WattBoxOutletPlatformAccessory} from './platformAccessory';
-import {WattBox} from './wattbox';
-import {APIEvent} from 'homebridge/lib/api';
+import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
+import {
+  WattBoxOutletPlatformAccessory,
+  WattBoxOutletPlatformAccessoryContext,
+} from './platformAccessory';
+import { WattBox } from './wattbox';
+import { APIEvent } from 'homebridge/lib/api';
 
 export class WattBoxHomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
@@ -38,35 +41,46 @@ export class WattBoxHomebridgePlatform implements DynamicPlatformPlugin {
     const wattBoxStatus = await this.wattbox.getStatus();
     const discoveredUUIDs: Set<string> = new Set();
 
-    for (const {outlet} of wattBoxStatus.outletInfos) {
-      const uuid = this.api.hap.uuid.generate(`${wattBoxStatus.serialNumber}:${outlet.id}`);
+    for (const { id, name } of wattBoxStatus.outlets) {
+      if (Array.isArray(this.config.excludeOutlets) && this.config.excludeOutlets.includes(name)) {
+        continue;
+      }
+      if (Array.isArray(this.config.includeOutlets) && !this.config.includeOutlets.includes(name)) {
+        continue;
+      }
+
+      const uuid = this.api.hap.uuid.generate(`${wattBoxStatus.information.serialNumber}:${id}`);
       discoveredUUIDs.add(uuid);
 
-      let accessory = this.accessories.find(accessory => accessory.UUID === uuid);
+      let accessory = this.accessories.find((accessory) => accessory.UUID === uuid);
       const existingAccessory = !!accessory;
-      accessory = accessory ?? new this.api.platformAccessory(outlet.name, uuid);
+      accessory = accessory ?? new this.api.platformAccessory(name, uuid);
 
       // Update the accessory context with the outlet.
-      accessory.context.outlet = outlet;
-
-      // Since we have the model info here we can just set it on the accessory.
-      accessory.getService(this.Service.AccessoryInformation)!
-        .setCharacteristic(this.Characteristic.Manufacturer, 'WattBox')
-        .setCharacteristic(this.Characteristic.Model, wattBoxStatus.model)
-        .setCharacteristic(this.Characteristic.SerialNumber, wattBoxStatus.serialNumber);
+      accessory.context = <WattBoxOutletPlatformAccessoryContext>{
+        outletId: id,
+        outletName: name,
+        model: wattBoxStatus.information.model,
+        serialNumber: wattBoxStatus.information.serialNumber,
+      };
 
       if (existingAccessory) {
         this.log.info('Restoring existing accessory from cache:', accessory.displayName);
         this.api.updatePlatformAccessories([accessory]);
       } else {
-        this.log.info('Adding new accessory:', outlet.name);
+        this.log.info('Adding new accessory:', name);
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
       new WattBoxOutletPlatformAccessory(this, accessory);
     }
-    const orphanedAccessories = this.accessories.filter(accessory => !discoveredUUIDs.has(accessory.UUID));
+    const orphanedAccessories = this.accessories.filter(
+      (accessory) => !discoveredUUIDs.has(accessory.UUID),
+    );
     if (orphanedAccessories.length > 0) {
-      this.log.info('Removing orphaned accessories from cache: ', orphanedAccessories.map(({displayName}) => displayName).join(', '));
+      this.log.info(
+        'Removing orphaned accessories from cache: ',
+        orphanedAccessories.map(({ displayName }) => displayName).join(', '),
+      );
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, orphanedAccessories);
     }
   }

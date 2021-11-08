@@ -5,7 +5,7 @@ To develop Homebridge plugins you must have Node.js 12 or later installed, and a
 development easier and comes with pre-configured settings for [VS Code](https://code.visualstudio.com/) and ESLint.
 If you are using VS Code install these extensions:
 
-* [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint)
+- [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint)
 
 ## Install Development Dependencies
 
@@ -75,7 +75,7 @@ npm version patch
 
 #### Publishing Beta Versions
 
-You can publish *beta* versions of this plugin for other users to test before you release it to everyone.
+You can publish _beta_ versions of this plugin for other users to test before you release it to everyone.
 
 ```bash
 # create a new pre-release version (eg. 2.1.0-beta.1)
@@ -85,10 +85,8 @@ npm version prepatch --preid beta
 npm publish --tag=beta
 ```
 
-Users can then install the  *beta* version by appending `@beta` to the install command, for example:
+Users can then install the _beta_ version by appending `@beta` to the install command, for example:
 
 ```
 sudo npm install -g homebridge-wattbox@beta
 ```
-
-

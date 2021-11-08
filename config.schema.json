@@ -31,6 +31,26 @@
         "options": {
           "hidden": true
         }
+      },
+      "includeOutlets": {
+        "title": "Include Outlets",
+        "type": "array",
+        "default": null,
+        "required": false,
+        "items": {
+          "title": "Outlet Name",
+          "type": "string"
+        }
+      },
+      "excludeOutlets": {
+        "title": "Exclude Outlets",
+        "type": "array",
+        "default": null,
+        "required": false,
+        "items": {
+          "title": "Outlet Name",
+          "type": "string"
+        }
       }
     }
   }

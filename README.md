@@ -8,10 +8,10 @@
 
 ## Models Supported
 
-* WB-300
-* WB-300VB
-* WB-700
-* WB-700CH
+- WB-300
+- WB-300VB
+- WB-700
+- WB-700CH
 
 ## Configuration
 
