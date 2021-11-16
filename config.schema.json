@@ -9,12 +9,14 @@
         "title": "Name",
         "type": "string",
         "default": "WattBox",
+        "minLength": 1,
         "required": true
       },
       "address": {
         "title": "WattBox Address",
         "type": "string",
         "default": "192.168.1.100",
+        "minLength": 7,
         "required": true
       },
       "username": {
@@ -30,6 +32,27 @@
         "required": true,
         "options": {
           "hidden": true
+        }
+      },
+      "disableSwitch": {
+        "type": "object",
+        "default": null,
+        "required": false,
+        "properties": {
+          "name": {
+            "title": "Disable Switch Name",
+            "type": "string",
+            "default": "Disable Control",
+            "minLength": 1,
+            "required": false
+          },
+          "timeout": {
+            "title": "Enabled timeout (in seconds) before the disable switch reverts to ON.",
+            "type": "integer",
+            "default": 60,
+            "minimum": 0,
+            "required": false
+          }
         }
       },
       "includeOutlets": {
@@ -51,6 +74,22 @@
           "title": "Outlet Name",
           "type": "string"
         }
+      },
+      "outletStatusCacheTtl": {
+        "title": "Outlet Status Cache TTL (in seconds)",
+        "type": "integer",
+        "default": 15,
+        "minimum": 5,
+        "maximum": 60,
+        "required": true
+      },
+      "outletStatusPollInterval": {
+        "title": "Outlet Status Poll Interval (in milliseconds)",
+        "type": "integer",
+        "default": 15000,
+        "minimum": 5000,
+        "maximum": 60000,
+        "required": true
       }
     }
   }

@@ -8,6 +8,7 @@ export interface WattBoxOutletPlatformAccessoryContext {
   outletName: string;
   model: string;
   serialNumber: string;
+  isDisabled: () => boolean;
 }
 
 export class WattBoxOutletPlatformAccessory {
@@ -19,6 +20,7 @@ export class WattBoxOutletPlatformAccessory {
   private readonly outletName = this.context.outletName;
   private readonly model = this.context.model;
   private readonly serialNumber = this.context.serialNumber;
+  private readonly isDisabled = this.context.isDisabled;
   private readonly id = `${this.serialNumber}:${this.outletId}`;
 
   private status = WattBoxOutletStatus.UNKNOWN;
@@ -54,7 +56,11 @@ export class WattBoxOutletPlatformAccessory {
     });
   }
 
-  async setOn(value: CharacteristicValue): Promise<void> {
+  private async setOn(value: CharacteristicValue): Promise<void> {
+    if (this.isDisabled()) {
+      this.log.info('[%s] Cannot set Characteristic On when disabled', this.outletName);
+      throw new this.hap.HapStatusError(this.hap.HAPStatus.READ_ONLY_CHARACTERISTIC);
+    }
     this.log.debug('[%s] Set Characteristic On ->', this.outletName, value);
     try {
       await this.wattbox.commandOutlet(
@@ -71,8 +77,8 @@ export class WattBoxOutletPlatformAccessory {
     }
   }
 
-  async getOn(): Promise<CharacteristicValue> {
-    if (this.status === null) {
+  private getOn(): CharacteristicValue {
+    if (this.status === WattBoxOutletStatus.UNKNOWN) {
       throw new this.hap.HapStatusError(this.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
     }
     this.log.debug(

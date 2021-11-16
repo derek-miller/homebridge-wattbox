@@ -3,9 +3,10 @@ import PubSub from 'pubsub-js';
 import { Logger } from 'homebridge';
 
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import cacheManager, { Cache } from 'cache-manager';
 import * as http from 'http';
 import AsyncLock from 'async-lock';
-import EventEmitter from 'events';
+import axiosRetry from 'axios-retry';
 import Token = PubSubJS.Token;
 
 export interface WattBoxStatus {
@@ -96,172 +97,158 @@ export interface WattBoxUPS {
   isMuted: boolean;
 }
 
+export interface WattBoxConfig {
+  address: string;
+  username: string;
+  password: string;
+  outletStatusPollInterval?: number;
+  outletStatusCacheTtl?: number;
+}
+
 export class WattBox {
   private static readonly PUB_SUB_OUTLET_TOPIC = 'outlet';
-  private static readonly STATUS_CACHE_TTL_MS = 5000;
 
-  // Events
-  private static readonly POLL: string = 'POLL';
-  private static readonly STATUS_LOCK_NAME = 'STATUS';
-  private static readonly STATUS_UPDATE = 'STATUS_UPDATE';
-  private static readonly TRIGGER_STATUS_UPDATE = 'TRIGGER_STATUS_UPDATE';
+  private static readonly OUTLET_STATUS_CACHE_KEY = 'outlet-status';
+  private static readonly OUTLET_STATUS_CACHE_TTL_S_DEFAULT = 15;
+  private static readonly OUTLET_STATUS_CACHE_TTL_S_MIN = 5;
+  private static readonly OUTLET_STATUS_CACHE_TTL_S_MAX = 60;
 
-  private lock: AsyncLock = new AsyncLock();
-  private session: AxiosInstance;
-  private emitter: EventEmitter = new EventEmitter();
-  private cachedStatus: WattBoxStatus | null = null;
-  private cachedStatusError: Error | null = null;
-  private outletIdSubscriptions: Record<Token, string> = {};
+  private static readonly OUTLET_STATUS_POLL_INTERVAL_MS_DEFAULT = 15 * 1000;
+  private static readonly OUTLET_STATUS_POLL_INTERVAL_MS_MIN = 5 * 1000;
+  private static readonly OUTLET_STATUS_POLL_INTERVAL_MS_MAX = 60 * 1000;
 
-  constructor(
-    public readonly log: Logger,
-    private readonly address: string,
-    private readonly username: string,
-    private readonly password: string,
-  ) {
+  private static readonly OUTLET_STATUS_LOCK = 'OUTLET_STATUS';
+
+  private readonly lock = new AsyncLock();
+  private readonly cache: Cache;
+  private readonly session: AxiosInstance;
+
+  constructor(public readonly log: Logger, private readonly config: WattBoxConfig) {
+    this.cache = cacheManager.caching({
+      ttl: 0, // No default ttl
+      max: 0, // Infinite capacity
+      store: 'memory',
+    });
     this.session = axios.create({
       httpAgent: new http.Agent({ keepAlive: true }),
-      baseURL: this.address,
+      baseURL: this.config.address,
       responseType: 'document',
       timeout: 5000,
       headers: {
-        Authorization: `Basic ${Buffer.from(`${this.username}:${this.password}`).toString(
-          'base64',
-        )}`,
+        Authorization: `Basic ${Buffer.from(
+          `${this.config.username}:${this.config.password}`,
+        ).toString('base64')}`,
       },
     });
-    this.emitter.on(WattBox.POLL, async () => {
-      if (PubSub.countSubscriptions(WattBox.PUB_SUB_OUTLET_TOPIC) === 0) {
-        this.log.debug('[API] There are no outlet status subscriptions; skipping poll');
-        return;
-      }
-      try {
-        await this.getStatus();
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          this.log.error('[API] An error occurred polling for a status update; %s', error.message);
-        }
-      }
-    });
-    this.emitter.on(WattBox.TRIGGER_STATUS_UPDATE, () => {
-      this.cachedStatusError = null;
-      this.cachedStatus = null;
-      this.emitter.emit(WattBox.POLL);
-    });
-    this.emitter.on(WattBox.STATUS_UPDATE, (error, status) => {
-      // Trigger a status update after the ttl expires.
-      setTimeout(
-        () => this.emitter.emit(WattBox.TRIGGER_STATUS_UPDATE),
-        WattBox.STATUS_CACHE_TTL_MS,
-      );
-
-      if (status) {
-        // Publish status updates to each of the outlet subscriptions.
-        for (const outlet of status.outlets) {
-          PubSub.publish(`${WattBox.PUB_SUB_OUTLET_TOPIC}.${outlet.id}`, outlet);
-        }
-      }
-    });
+    axiosRetry(this.session, { retries: 3 });
   }
 
   subscribe(outletId: string, func: (outlet: WattBoxOutlet) => void): Token {
-    this.log.debug('[API] Status subscription added for outlet %s', outletId);
-    const token = PubSub.subscribe(
-      `${WattBox.PUB_SUB_OUTLET_TOPIC}.${outletId}`,
-      async (_, data) => {
-        if (!data) {
+    const topic = WattBox.outletStatusTopic(outletId);
+    const token = PubSub.subscribe(topic, async (_, data) => {
+      if (!data) {
+        return;
+      }
+      func(data);
+    });
+    this.log.debug('[API] Status subscription added for outlet %s [token=%s]', outletId, token);
+
+    // When this is the first subscription, start polling to publish updates.
+    if (PubSub.countSubscriptions(topic) === 1) {
+      const poll = async () => {
+        // Stop polling when there are no active subscriptions.
+        if (PubSub.countSubscriptions(topic) === 0) {
+          this.log.debug('[API] There are no outlet status subscriptions; skipping poll');
           return;
         }
-        return func(data);
-      },
-    );
-    this.outletIdSubscriptions[token] = outletId;
-
-    // Trigger a poll to get updated status for the new subscription.
-    this.emitter.emit(WattBox.POLL);
-
+        // Acquire the status lock before emitting any new events.
+        this.log.debug('[API] Polling status for outlet %s', outletId);
+        try {
+          PubSub.publish(topic, await this.getOutletStatus(outletId));
+        } catch (error: unknown) {
+          if (error instanceof Error) {
+            this.log.error(
+              '[API] An error occurred polling for a status update; %s',
+              error.message,
+            );
+          }
+        }
+        setTimeout(poll, this.pollInterval);
+      };
+      setTimeout(poll, 0);
+    }
     return token;
   }
 
   unsubscribe(token: Token): void {
-    if (token in this.outletIdSubscriptions) {
-      this.log.debug('[API] Status subscription removed for outlet %s', token);
-    }
     PubSub.unsubscribe(token);
+    this.log.debug('[API] Status subscription removed for token %s', token);
   }
 
   async getStatus(): Promise<WattBoxStatus> {
-    return this.lock.acquire(WattBox.STATUS_LOCK_NAME, async (): Promise<WattBoxStatus> => {
-      // Return/Throw cached status
-      if (this.cachedStatusError) {
-        throw this.cachedStatusError;
-      } else if (this.cachedStatus) {
-        return this.cachedStatus;
-      }
-
-      this.log.debug('[API] Fetching status from WattBox API');
-      let request: WattBoxInfoResponseBody;
-      try {
-        ({ request } = await this.xmlRequest<WattBoxInfoResponse>({
-          method: 'get',
-          url: '/wattbox_info.xml',
-        }));
-        this.cachedStatusError = null;
-        this.cachedStatus = {
-          information: {
-            hostname: request.host_name,
-            model: request.hardware_version,
-            serialNumber: request.serial_number,
+    return this.lock.acquire(
+      WattBox.OUTLET_STATUS_LOCK,
+      async (): Promise<WattBoxStatus> =>
+        this.cache.wrap(
+          WattBox.OUTLET_STATUS_CACHE_KEY,
+          async (): Promise<WattBoxStatus> => {
+            this.log.debug('[API] Fetching status from WattBox API');
+            const { request } = await this.xmlRequest<WattBoxInfoResponse>({
+              method: 'get',
+              url: '/wattbox_info.xml',
+            });
+            return {
+              information: {
+                hostname: request.host_name,
+                model: request.hardware_version,
+                serialNumber: request.serial_number,
+              },
+              autoReboot: {
+                enabled: request.auto_reboot === '1',
+                connections: request.site_ip
+                  .map((ip, i) => ({
+                    targetIp: ip,
+                    responseTimeMs: parseInt(request.connect_status[i]),
+                    timeoutPercent: parseInt(request.site_lost[i]),
+                  }))
+                  .filter(({ targetIp }) => targetIp !== '0'),
+              },
+              outlets: request.outlet_name.map((name, i) => ({
+                id: `${i + 1}`,
+                name,
+                status: parseInt(request.outlet_status[i]),
+                mode: parseInt(request.outlet_method[i]),
+              })),
+              leds: {
+                internet: parseInt(request.led_status[0]),
+                system: parseInt(request.led_status[1]),
+                autoReboot: parseInt(request.led_status[2]),
+              },
+              safeVoltageStatus: parseInt(request.safe_voltage_status),
+              voltage: parseInt(request.voltage_value) / 10.0,
+              current: parseInt(request.current_value) / 10.0,
+              power: parseInt(request.power_value) / 10.0,
+              cloudOnline: request.cloud_status === '1',
+              ups:
+                request.hasUPS === '0'
+                  ? null
+                  : {
+                      audibleAlarmEnabled: request.audible_alarm === '1',
+                      estRunTimeMinutes: parseInt(request.est_run_time),
+                      batteryTestEnabled: request.battery_test === '1',
+                      batteryHealthy: request.battery_health === '1',
+                      batteryChargePercent: parseInt(request.battery_charge),
+                      batteryLoadPercent: parseInt(request.battery_load),
+                      onBattery: request.power_lost === '1',
+                      isMuted: request.mute === '1',
+                    },
+            };
           },
-          autoReboot: {
-            enabled: request.auto_reboot === '1',
-            connections: request.site_ip
-              .map((ip, i) => ({
-                targetIp: ip,
-                responseTimeMs: parseInt(request.connect_status[i]),
-                timeoutPercent: parseInt(request.site_lost[i]),
-              }))
-              .filter(({ targetIp }) => targetIp !== '0'),
+          {
+            ttl: this.outletStatusCacheTtl,
           },
-          outlets: request.outlet_name.map((name, i) => ({
-            id: `${i + 1}`,
-            name,
-            status: parseInt(request.outlet_status[i]),
-            mode: parseInt(request.outlet_method[i]),
-          })),
-          leds: {
-            internet: parseInt(request.led_status[0]),
-            system: parseInt(request.led_status[1]),
-            autoReboot: parseInt(request.led_status[2]),
-          },
-          safeVoltageStatus: parseInt(request.safe_voltage_status),
-          voltage: parseInt(request.voltage_value) / 10.0,
-          current: parseInt(request.current_value) / 10.0,
-          power: parseInt(request.power_value) / 10.0,
-          cloudOnline: request.cloud_status === '1',
-          ups:
-            request.hasUPS === '0'
-              ? null
-              : {
-                  audibleAlarmEnabled: request.audible_alarm === '1',
-                  estRunTimeMinutes: parseInt(request.est_run_time),
-                  batteryTestEnabled: request.battery_test === '1',
-                  batteryHealthy: request.battery_health === '1',
-                  batteryChargePercent: parseInt(request.battery_charge),
-                  batteryLoadPercent: parseInt(request.battery_load),
-                  onBattery: request.power_lost === '1',
-                  isMuted: request.mute === '1',
-                },
-        };
-        return this.cachedStatus;
-      } catch (error: unknown) {
-        this.cachedStatusError = <Error>error;
-        this.cachedStatus = null;
-        throw error;
-      } finally {
-        this.emitter.emit(WattBox.STATUS_UPDATE, this.cachedStatusError, this.cachedStatus);
-      }
-    });
+        ),
+    );
   }
 
   async getOutletStatus(outletId: string): Promise<WattBoxOutlet> {
@@ -274,7 +261,7 @@ export class WattBox {
   }
 
   async commandOutlet(outletId: string, command: WattBoxOutletAction): Promise<void> {
-    return this.lock.acquire(WattBox.STATUS_LOCK_NAME, async () => {
+    return this.lock.acquire(WattBox.OUTLET_STATUS_LOCK, async () => {
       await this.xmlRequest({
         method: 'get',
         url: '/control.cgi',
@@ -283,14 +270,37 @@ export class WattBox {
           command,
         },
       });
-      // Trigger an update to pick up any changes.
-      this.emitter.emit(WattBox.TRIGGER_STATUS_UPDATE);
+      await this.cache.del(WattBox.OUTLET_STATUS_CACHE_KEY);
     });
   }
 
   private async xmlRequest<T = never, D = never>(config: AxiosRequestConfig<D>): Promise<T> {
     const { data } = <AxiosResponse<T>>await this.session.request(config);
     return parser.parseStringPromise(data);
+  }
+
+  private get outletStatusCacheTtl(): number {
+    return Math.max(
+      WattBox.OUTLET_STATUS_CACHE_TTL_S_MIN,
+      Math.min(
+        WattBox.OUTLET_STATUS_CACHE_TTL_S_MAX,
+        this.config.outletStatusCacheTtl ?? WattBox.OUTLET_STATUS_CACHE_TTL_S_DEFAULT,
+      ),
+    );
+  }
+
+  private get pollInterval(): number {
+    return Math.max(
+      WattBox.OUTLET_STATUS_POLL_INTERVAL_MS_MIN,
+      Math.min(
+        WattBox.OUTLET_STATUS_POLL_INTERVAL_MS_MAX,
+        this.config.outletStatusPollInterval ?? WattBox.OUTLET_STATUS_POLL_INTERVAL_MS_DEFAULT,
+      ),
+    );
+  }
+
+  private static outletStatusTopic(outletId: string): string {
+    return `${WattBox.PUB_SUB_OUTLET_TOPIC}.${outletId}`;
   }
 }
 
