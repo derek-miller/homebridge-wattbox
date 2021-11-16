@@ -80,7 +80,7 @@ export class WattBoxHomebridgePlatform implements DynamicPlatformPlugin {
         this.log.info('Restoring existing accessory from cache:', accessory.displayName);
         this.api.updatePlatformAccessories([accessory]);
       } else {
-        this.log.info('Adding new accessory:', 'Disabled');
+        this.log.info('Adding new accessory:', switchName);
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
       const disable = new WattBoxDisableOutletsPlatformAccessory(this, accessory);
