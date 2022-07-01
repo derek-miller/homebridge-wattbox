@@ -1,42 +1,46 @@
-import { CharacteristicValue, PlatformAccessory } from 'homebridge';
+import { CharacteristicValue, HAP, Logger, PlatformAccessory } from 'homebridge';
 
 import { WattBoxHomebridgePlatform } from './platform';
-import { WattBoxOutletAction, WattBoxOutletStatus } from './wattbox';
+import { WattBox, WattBoxOutlet, WattBoxOutletAction, WattBoxOutletStatus } from './wattbox';
+
+export type WattBoxOutletOptionalState = Pick<WattBoxOutlet, 'name' | 'id'> &
+  Partial<WattBoxOutlet>;
 
 export interface WattBoxOutletPlatformAccessoryContext {
-  outletId: string;
-  outletName: string;
   model: string;
   serialNumber: string;
-  isDisabled: () => boolean;
 }
 
 export class WattBoxOutletPlatformAccessory {
-  private readonly log = this.platform.log;
-  private readonly hap = this.platform.api.hap;
-  private readonly wattbox = this.platform.wattbox;
-  private readonly context = <WattBoxOutletPlatformAccessoryContext>this.accessory.context;
-  private readonly outletId = this.context.outletId;
-  private readonly outletName = this.context.outletName;
-  private readonly model = this.context.model;
-  private readonly serialNumber = this.context.serialNumber;
-  private readonly isDisabled = this.context.isDisabled;
-  private readonly id = `${this.serialNumber}:${this.outletId}`;
+  private readonly log: Logger;
+  private readonly hap: HAP;
+  private readonly wattbox: WattBox;
+  private readonly context: WattBoxOutletPlatformAccessoryContext;
+  private readonly outletId: string;
+  private readonly outletName: string;
+  private readonly serialNumber: string;
+  private readonly id: string;
 
   private status = WattBoxOutletStatus.UNKNOWN;
 
   constructor(
     private readonly platform: WattBoxHomebridgePlatform,
     private readonly accessory: PlatformAccessory,
+    private readonly outlet: WattBoxOutletOptionalState,
   ) {
-    this.accessory
-      .getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'WattBox')
-      .setCharacteristic(this.platform.Characteristic.Model, this.model)
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, this.serialNumber);
+    this.log = this.platform.log;
+    this.hap = this.platform.api.hap;
+    this.wattbox = this.platform.wattbox;
+    this.context = <WattBoxOutletPlatformAccessoryContext>this.accessory.context;
+    this.serialNumber = this.context.serialNumber;
+    this.outletId = this.outlet.id;
+    this.outletName = this.outlet.name;
+    this.id = `${this.serialNumber}:${this.outletId}`;
 
-    const statusCharacteristic = (this.accessory.getService(this.platform.Service.Outlet) ||
-      this.accessory.addService(this.platform.Service.Outlet, this.outletName, this.id))!
+    const statusCharacteristic = (this.accessory.getServiceById(
+      this.platform.Service.Outlet,
+      this.id,
+    ) || this.accessory.addService(this.platform.Service.Outlet, this.outletName, this.id))!
       .setCharacteristic(this.platform.Characteristic.Name, this.outletName)
       .getCharacteristic(this.platform.Characteristic.On)
       .onSet(this.setOn.bind(this))
@@ -57,10 +61,6 @@ export class WattBoxOutletPlatformAccessory {
   }
 
   private async setOn(value: CharacteristicValue): Promise<void> {
-    if (this.isDisabled()) {
-      this.log.info('[%s] Cannot set Characteristic On when disabled', this.outletName);
-      throw new this.hap.HapStatusError(this.hap.HAPStatus.READ_ONLY_CHARACTERISTIC);
-    }
     this.log.debug('[%s] Set Characteristic On ->', this.outletName, value);
     try {
       await this.wattbox.commandOutlet(

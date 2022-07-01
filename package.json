@@ -1,7 +1,7 @@
 {
   "displayName": "Homebridge WattBox Plugin",
   "name": "homebridge-wattbox",
-  "version": "1.2.1",
+  "version": "2.0.0",
   "description": "WattBox plugin for Homebridge.",
   "license": "Apache-2.0",
   "repository": {
@@ -33,26 +33,27 @@
     "wattbox"
   ],
   "dependencies": {
-    "async-lock": "^1.3.0",
-    "axios": "^0.24.0",
-    "axios-retry": "^3.2.4",
-    "cache-manager": "^3.6.0",
-    "pubsub-js": "^1.9.3",
+    "async-lock": "^1.3.2",
+    "axios": "^0.27.2",
+    "axios-retry": "^3.3.1",
+    "cache-manager": "^4.0.1",
+    "pubsub-js": "^1.9.4",
     "xml2js": "^0.4.23"
   },
   "devDependencies": {
-    "@types/async-lock": "^1.1.3",
-    "@types/node": "^16.10.9",
+    "@types/async-lock": "^1.1.5",
+    "@types/cache-manager": "^4.0.1",
+    "@types/node": "^18.0.0",
     "@types/pubsub-js": "^1.8.3",
-    "@types/xml2js": "^0.4.9",
-    "@typescript-eslint/eslint-plugin": "^5.0.0",
-    "@typescript-eslint/parser": "^5.0.0",
-    "eslint": "^8.0.1",
-    "homebridge": "^1.3.5",
-    "nodemon": "^2.0.13",
-    "prettier": "^2.4.1",
+    "@types/xml2js": "^0.4.11",
+    "@typescript-eslint/eslint-plugin": "^5.30.0",
+    "@typescript-eslint/parser": "^5.30.0",
+    "eslint": "^8.18.0",
+    "homebridge": "^1.5.0",
+    "nodemon": "^2.0.18",
+    "prettier": "^2.7.1",
     "rimraf": "^3.0.2",
-    "ts-node": "^10.3.0",
-    "typescript": "^4.4.4"
+    "ts-node": "^10.8.1",
+    "typescript": "^4.7.4"
   }
 }
