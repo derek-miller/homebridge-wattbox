@@ -92,5 +92,24 @@
         "required": true
       }
     }
-  }
+  },
+  "form": [
+    "name",
+    "address",
+    "username",
+    "password",
+    "disableSwitch",
+    {
+      "type": "fieldset",
+      "expandable": true,
+      "title": "Advanced Settings",
+      "description": "",
+      "items": [
+        "includeOutlets",
+        "excludeOutlets",
+        "outletStatusCacheTtl",
+        "outletStatusPollInterval"
+      ]
+    }
+  ]
 }

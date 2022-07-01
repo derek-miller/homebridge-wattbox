@@ -33,18 +33,20 @@ export interface WattBoxDisableOutletsConfigDisableSwitch {
 }
 
 export class WattBoxHomebridgePlatform implements DynamicPlatformPlugin {
-  public readonly Service: typeof Service = this.api.hap.Service;
-  public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
-
+  public readonly Service: typeof Service;
+  public readonly Characteristic: typeof Characteristic;
   public readonly accessories: PlatformAccessory[] = [];
+  public readonly config: WattBoxHomebridgePlatformConfig;
   public readonly wattbox: WattBox;
-  public readonly config = <WattBoxHomebridgePlatformConfig>this.platformConfig;
 
   constructor(
     public readonly log: Logger,
     public readonly platformConfig: PlatformConfig,
     public readonly api: API,
   ) {
+    this.Service = this.api.hap.Service;
+    this.Characteristic = this.api.hap.Characteristic;
+    this.config = <WattBoxHomebridgePlatformConfig>this.platformConfig;
     this.wattbox = new WattBox(log, this.config);
     this.api.on(APIEvent.DID_FINISH_LAUNCHING, async () => this.discoverDevices());
   }

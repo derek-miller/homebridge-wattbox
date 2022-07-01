@@ -1,7 +1,7 @@
-import { CharacteristicValue, PlatformAccessory } from 'homebridge';
+import { CharacteristicValue, HAP, Logger, PlatformAccessory } from 'homebridge';
 
 import { WattBoxHomebridgePlatform } from './platform';
-import { WattBoxOutletAction, WattBoxOutletStatus } from './wattbox';
+import { WattBox, WattBoxOutletAction, WattBoxOutletStatus } from './wattbox';
 
 export interface WattBoxOutletPlatformAccessoryContext {
   outletId: string;
@@ -12,16 +12,16 @@ export interface WattBoxOutletPlatformAccessoryContext {
 }
 
 export class WattBoxOutletPlatformAccessory {
-  private readonly log = this.platform.log;
-  private readonly hap = this.platform.api.hap;
-  private readonly wattbox = this.platform.wattbox;
-  private readonly context = <WattBoxOutletPlatformAccessoryContext>this.accessory.context;
-  private readonly outletId = this.context.outletId;
-  private readonly outletName = this.context.outletName;
-  private readonly model = this.context.model;
-  private readonly serialNumber = this.context.serialNumber;
-  private readonly isDisabled = this.context.isDisabled;
-  private readonly id = `${this.serialNumber}:${this.outletId}`;
+  private readonly log: Logger;
+  private readonly hap: HAP;
+  private readonly wattbox: WattBox;
+  private readonly context: WattBoxOutletPlatformAccessoryContext;
+  private readonly outletId: string;
+  private readonly outletName: string;
+  private readonly model: string;
+  private readonly serialNumber: string;
+  private readonly isDisabled: () => boolean;
+  private readonly id: string;
 
   private status = WattBoxOutletStatus.UNKNOWN;
 
@@ -29,6 +29,16 @@ export class WattBoxOutletPlatformAccessory {
     private readonly platform: WattBoxHomebridgePlatform,
     private readonly accessory: PlatformAccessory,
   ) {
+    this.log = this.platform.log;
+    this.hap = this.platform.api.hap;
+    this.wattbox = this.platform.wattbox;
+    this.context = <WattBoxOutletPlatformAccessoryContext>this.accessory.context;
+    this.outletId = this.context.outletId;
+    this.outletName = this.context.outletName;
+    this.model = this.context.model;
+    this.serialNumber = this.context.serialNumber;
+    this.isDisabled = this.context.isDisabled;
+    this.id = `${this.serialNumber}:${this.outletId}`;
     this.accessory
       .getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'WattBox')
