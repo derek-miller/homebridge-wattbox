@@ -34,27 +34,6 @@
           "hidden": true
         }
       },
-      "disableSwitch": {
-        "type": "object",
-        "default": null,
-        "required": false,
-        "properties": {
-          "name": {
-            "title": "Disable Switch Name",
-            "type": "string",
-            "default": "Disable Control",
-            "minLength": 1,
-            "required": false
-          },
-          "timeout": {
-            "title": "Enabled timeout (in seconds) before the disable switch reverts to ON.",
-            "type": "integer",
-            "default": 60,
-            "minimum": 0,
-            "required": false
-          }
-        }
-      },
       "includeOutlets": {
         "title": "Include Outlets",
         "type": "array",
@@ -98,7 +77,6 @@
     "address",
     "username",
     "password",
-    "disableSwitch",
     {
       "type": "fieldset",
       "expandable": true,

@@ -34,26 +34,6 @@ for [Homebridge](https://github.com/homebridge/homebridge).
 
 ### Optional Configuration
 
-#### Disable Control Switch
-
-Considering how easy it is to accidentally command an outlet from HomeKit you
-can optionally add a switch to disable control. When on, commands to control an
-outlet will be ignored:
-
-```
-{
-  "platforms": [
-    {
-      // ... required config, see above
-      "disableSwitch": { // Defaults to null
-        "name": "<name>" // Defaults to "Disable Control"
-        "timeout": <number> // Defaults to 60, 0 or null to disable. After timeout, control is re-disabled.
-      }
-    }
-  ]
-}
-```
-
 #### Include/Exclude Outlets
 
 Outlets can be included or excluded by name:

@@ -15,22 +15,12 @@ import {
   WattBoxOutletPlatformAccessoryContext,
 } from './platformAccessory';
 import { WattBox, WattBoxConfig } from './wattbox';
-import {
-  WattBoxDisableOutletsPlatformAccessory,
-  WattBoxDisableOutletsPlatformAccessoryContext,
-} from './platformAccessoryDisable';
 
 type WattBoxHomebridgePlatformConfig = PlatformConfig &
   WattBoxConfig & {
-    disableSwitch?: WattBoxDisableOutletsConfigDisableSwitch;
     includeOutlets?: string[];
     excludeOutlets?: string[];
   };
-
-export interface WattBoxDisableOutletsConfigDisableSwitch {
-  name?: string;
-  timeout?: number;
-}
 
 export class WattBoxHomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -58,72 +48,72 @@ export class WattBoxHomebridgePlatform implements DynamicPlatformPlugin {
 
   async discoverDevices() {
     const wattBoxStatus = await this.wattbox.getStatus();
-    const discoveredUUIDs: Set<string> = new Set();
+    const discoveredServices: Array<Service> = [];
 
-    let isDisabled = () => false;
-    if (this.config.disableSwitch) {
-      const { name: switchName = 'Disable Control', timeout = 0 } = this.config.disableSwitch;
-      const uuid = this.api.hap.uuid.generate(wattBoxStatus.information.serialNumber);
-      discoveredUUIDs.add(uuid);
-      let accessory = this.accessories.find((accessory) => accessory.UUID === uuid);
-      const existingAccessory = !!accessory;
-      accessory = accessory ?? new this.api.platformAccessory(switchName, uuid);
+    const uuid = this.api.hap.uuid.generate(wattBoxStatus.information.serialNumber);
+    const existingAccessory = this.accessories.find((accessory) => accessory.UUID === uuid);
+    const accessory =
+      existingAccessory ?? new this.api.platformAccessory(this.config.name ?? 'WattBox', uuid);
 
-      // Update the accessory context with the outlet.
-      accessory.context = <WattBoxDisableOutletsPlatformAccessoryContext>{
-        switchName,
-        model: wattBoxStatus.information.model,
-        serialNumber: wattBoxStatus.information.serialNumber,
-        defaultDisabled: true,
-        timeout,
+    // Update the accessory context with the general info.
+    accessory.context = <WattBoxOutletPlatformAccessoryContext>{
+      model: wattBoxStatus.information.model,
+      serialNumber: wattBoxStatus.information.serialNumber,
+    };
+
+    // Monkeypatch accessory methods for getting services in order to identify orphaned services.
+    const patch = (methodName) => {
+      const original = accessory[methodName].bind(accessory);
+      accessory[methodName] = (...args) => {
+        const service = original(...args);
+        if (service) {
+          discoveredServices.push(service);
+        }
+        return service;
       };
+    };
+    patch('getService');
+    patch('addService');
+    patch('getServiceById');
 
-      if (existingAccessory) {
-        this.log.info('Restoring existing accessory from cache:', accessory.displayName);
-        this.api.updatePlatformAccessories([accessory]);
-      } else {
-        this.log.info('Adding new accessory:', switchName);
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      }
-      const disable = new WattBoxDisableOutletsPlatformAccessory(this, accessory);
-      isDisabled = () => disable.isDisabled();
-    }
-    for (const { id, name } of wattBoxStatus.outlets) {
-      if (Array.isArray(this.config.excludeOutlets) && this.config.excludeOutlets.includes(name)) {
+    accessory
+      .getService(this.Service.AccessoryInformation)!
+      .setCharacteristic(this.Characteristic.Manufacturer, 'WattBox')
+      .setCharacteristic(this.Characteristic.Model, wattBoxStatus.information.model)
+      .setCharacteristic(this.Characteristic.SerialNumber, wattBoxStatus.information.serialNumber);
+
+    for (const outlet of wattBoxStatus.outlets) {
+      if (
+        Array.isArray(this.config.excludeOutlets) &&
+        this.config.excludeOutlets.includes(outlet.name)
+      ) {
         continue;
       }
-      if (Array.isArray(this.config.includeOutlets) && !this.config.includeOutlets.includes(name)) {
+      if (
+        Array.isArray(this.config.includeOutlets) &&
+        !this.config.includeOutlets.includes(outlet.name)
+      ) {
         continue;
       }
-
-      const uuid = this.api.hap.uuid.generate(`${wattBoxStatus.information.serialNumber}:${id}`);
-      discoveredUUIDs.add(uuid);
-
-      let accessory = this.accessories.find((accessory) => accessory.UUID === uuid);
-      const existingAccessory = !!accessory;
-      accessory = accessory ?? new this.api.platformAccessory(name, uuid);
-
-      // Update the accessory context with the outlet.
-      accessory.context = <WattBoxOutletPlatformAccessoryContext>{
-        outletId: id,
-        outletName: name,
-        model: wattBoxStatus.information.model,
-        serialNumber: wattBoxStatus.information.serialNumber,
-        isDisabled,
-      };
-
-      if (existingAccessory) {
-        this.log.info('Restoring existing accessory from cache:', accessory.displayName);
-        this.api.updatePlatformAccessories([accessory]);
-      } else {
-        this.log.info('Adding new accessory:', name);
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      }
-      new WattBoxOutletPlatformAccessory(this, accessory);
+      new WattBoxOutletPlatformAccessory(this, accessory, outlet);
     }
-    const orphanedAccessories = this.accessories.filter(
-      (accessory) => !discoveredUUIDs.has(accessory.UUID),
-    );
+
+    // Remove any cached services that were orphaned.
+    accessory.services
+      .filter((service) => !discoveredServices.some((s) => Object.is(s, service)))
+      .forEach((service) => {
+        this.log.info('Removing orphaned service from cache:', service.displayName);
+        accessory.removeService(service);
+      });
+
+    if (existingAccessory) {
+      this.log.info('Restoring existing accessory from cache:', accessory.displayName);
+      this.api.updatePlatformAccessories([accessory]);
+    } else {
+      this.log.info('Adding new accessory:', accessory.displayName);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+    const orphanedAccessories = this.accessories.filter((accessory) => accessory.UUID !== uuid);
     if (orphanedAccessories.length > 0) {
       this.log.info(
         'Removing orphaned accessories from cache: ',
