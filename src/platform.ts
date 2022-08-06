@@ -14,7 +14,7 @@ import {
   WattBoxOutletPlatformAccessory,
   WattBoxOutletPlatformAccessoryContext,
 } from './platformAccessory';
-import { WattBox, WattBoxConfig } from './wattbox';
+import { WattBox, WattBoxConfig, WattBoxStatus } from './wattbox';
 
 type WattBoxHomebridgePlatformConfig = PlatformConfig &
   WattBoxConfig & {
@@ -47,7 +47,15 @@ export class WattBoxHomebridgePlatform implements DynamicPlatformPlugin {
   }
 
   async discoverDevices() {
-    const wattBoxStatus = await this.wattbox.getStatus();
+    let wattBoxStatus: WattBoxStatus;
+    try {
+      wattBoxStatus = await this.wattbox.getStatus();
+    } catch (error: unknown) {
+      this.log.error(
+        'Failed to get the status from the wattbox; verify IP address, username, and password are correct',
+      );
+      return;
+    }
     const discoveredServices: Array<Service> = [];
 
     const uuid = this.api.hap.uuid.generate(wattBoxStatus.information.serialNumber);

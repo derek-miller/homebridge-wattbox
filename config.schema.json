@@ -37,7 +37,7 @@
       "includeOutlets": {
         "title": "Include Outlets",
         "type": "array",
-        "default": null,
+        "default": [],
         "required": false,
         "items": {
           "title": "Outlet Name",
@@ -47,7 +47,7 @@
       "excludeOutlets": {
         "title": "Exclude Outlets",
         "type": "array",
-        "default": null,
+        "default": [],
         "required": false,
         "items": {
           "title": "Outlet Name",
