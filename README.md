@@ -1,6 +1,7 @@
 # homebridge-wattbox
 
 [![NPM Version](https://img.shields.io/npm/v/homebridge-wattbox.svg)](https://www.npmjs.com/package/homebridge-wattbox)
+[![verified-by-homebridge](https://badgen.net/badge/homebridge/verified/purple)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
 
 # WattBox Homebridge Platform Plugin
 

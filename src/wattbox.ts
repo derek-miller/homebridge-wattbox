@@ -274,7 +274,9 @@ export class WattBox {
     });
   }
 
-  private async xmlRequest<T = never, D = never>(config: AxiosRequestConfig<D>): Promise<T> {
+  private async xmlRequest<T extends xml2js.convertableToString = never, D = never>(
+    config: AxiosRequestConfig<D>,
+  ): Promise<T> {
     const { data } = <AxiosResponse<T>>await this.session.request(config);
     return parser.parseStringPromise(data);
   }
