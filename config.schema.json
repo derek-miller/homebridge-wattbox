@@ -72,19 +72,31 @@
       }
     }
   },
-  "form": [
+  "layout": [
     "name",
     "address",
     "username",
     "password",
     {
-      "type": "fieldset",
-      "expandable": true,
+      "type": "section",
       "title": "Advanced Settings",
-      "description": "",
+      "expandable": true,
+      "expanded": false,
       "items": [
-        "includeOutlets",
-        "excludeOutlets",
+        {
+          "key": "includeOutlets",
+          "type": "array",
+          "name": "Included Outlets",
+          "orderable": false,
+          "items": ["includeOutlets[]"]
+        },
+        {
+          "key": "excludeOutlets",
+          "type": "array",
+          "name": "Excluded Outlets",
+          "orderable": false,
+          "items": ["excludeOutlets[]"]
+        },
         "outletStatusCacheTtl",
         "outletStatusPollInterval"
       ]
