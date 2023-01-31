@@ -3,7 +3,7 @@ import PubSub from 'pubsub-js';
 import { Logger } from 'homebridge';
 
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import cacheManager, { Cache } from 'cache-manager';
+import { Cache, caching } from 'cache-manager';
 import * as http from 'http';
 import AsyncLock from 'async-lock';
 import axiosRetry from 'axios-retry';
@@ -120,14 +120,13 @@ export class WattBox {
   private static readonly OUTLET_STATUS_LOCK = 'OUTLET_STATUS';
 
   private readonly lock = new AsyncLock();
-  private readonly cache: Cache;
+  private readonly cache: Promise<Cache>;
   private readonly session: AxiosInstance;
 
   constructor(public readonly log: Logger, private readonly config: WattBoxConfig) {
-    this.cache = cacheManager.caching({
+    this.cache = caching('memory', {
       ttl: 0, // No default ttl
       max: 0, // Infinite capacity
-      store: 'memory',
     });
     this.session = axios.create({
       httpAgent: new http.Agent({ keepAlive: true }),
@@ -189,7 +188,7 @@ export class WattBox {
     return this.lock.acquire(
       WattBox.OUTLET_STATUS_LOCK,
       async (): Promise<WattBoxStatus> =>
-        this.cache.wrap(
+        (await this.cache).wrap(
           WattBox.OUTLET_STATUS_CACHE_KEY,
           async (): Promise<WattBoxStatus> => {
             this.log.debug('[API] Fetching status from WattBox API');
@@ -244,9 +243,7 @@ export class WattBox {
                     },
             };
           },
-          {
-            ttl: this.outletStatusCacheTtl,
-          },
+          this.outletStatusCacheTtl,
         ),
     );
   }
@@ -270,7 +267,7 @@ export class WattBox {
           command,
         },
       });
-      await this.cache.del(WattBox.OUTLET_STATUS_CACHE_KEY);
+      await (await this.cache).del(WattBox.OUTLET_STATUS_CACHE_KEY);
     });
   }
 
