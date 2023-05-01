@@ -109,9 +109,9 @@ export class WattBox {
   private static readonly PUB_SUB_OUTLET_TOPIC = 'outlet';
 
   private static readonly OUTLET_STATUS_CACHE_KEY = 'outlet-status';
-  private static readonly OUTLET_STATUS_CACHE_TTL_S_DEFAULT = 15;
-  private static readonly OUTLET_STATUS_CACHE_TTL_S_MIN = 5;
-  private static readonly OUTLET_STATUS_CACHE_TTL_S_MAX = 60;
+  private static readonly OUTLET_STATUS_CACHE_TTL_MS_DEFAULT = 15 * 1000;
+  private static readonly OUTLET_STATUS_CACHE_TTL_MS_MIN = 5 * 1000;
+  private static readonly OUTLET_STATUS_CACHE_TTL_MS_MAX = 60 * 1000;
 
   private static readonly OUTLET_STATUS_POLL_INTERVAL_MS_DEFAULT = 15 * 1000;
   private static readonly OUTLET_STATUS_POLL_INTERVAL_MS_MIN = 5 * 1000;
@@ -172,7 +172,7 @@ export class WattBox {
             );
           }
         }
-        setTimeout(poll, this.pollInterval);
+        setTimeout(poll, this.pollIntervalMs);
       };
       setTimeout(poll, 0);
     }
@@ -243,7 +243,7 @@ export class WattBox {
                     },
             };
           },
-          this.outletStatusCacheTtl,
+          this.outletStatusCacheTtlMs,
         ),
     );
   }
@@ -278,17 +278,18 @@ export class WattBox {
     return parser.parseStringPromise(data);
   }
 
-  private get outletStatusCacheTtl(): number {
+  private get outletStatusCacheTtlMs(): number {
     return Math.max(
-      WattBox.OUTLET_STATUS_CACHE_TTL_S_MIN,
+      WattBox.OUTLET_STATUS_CACHE_TTL_MS_MIN,
       Math.min(
-        WattBox.OUTLET_STATUS_CACHE_TTL_S_MAX,
-        this.config.outletStatusCacheTtl ?? WattBox.OUTLET_STATUS_CACHE_TTL_S_DEFAULT,
+        WattBox.OUTLET_STATUS_CACHE_TTL_MS_MAX,
+        (this.config.outletStatusCacheTtl ?? 0) * 1000 ||
+          WattBox.OUTLET_STATUS_CACHE_TTL_MS_DEFAULT,
       ),
     );
   }
 
-  private get pollInterval(): number {
+  private get pollIntervalMs(): number {
     return Math.max(
       WattBox.OUTLET_STATUS_POLL_INTERVAL_MS_MIN,
       Math.min(
