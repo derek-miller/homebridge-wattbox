@@ -2,12 +2,12 @@ import xml2js from 'xml2js';
 import PubSub from 'pubsub-js';
 import { Logger } from 'homebridge';
 
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { Cache, caching } from 'cache-manager';
-import * as http from 'http';
+import net from 'net';
+import querystring, { ParsedUrlQueryInput } from 'querystring';
 import AsyncLock from 'async-lock';
-import axiosRetry from 'axios-retry';
 import Token = PubSubJS.Token;
+import { HTTPParser } from 'http-parser-js';
 
 export interface WattBoxStatus {
   information: WattBoxInformation;
@@ -121,25 +121,15 @@ export class WattBox {
 
   private readonly lock = new AsyncLock();
   private readonly cache: Promise<Cache>;
-  private readonly session: AxiosInstance;
 
-  constructor(public readonly log: Logger, private readonly config: WattBoxConfig) {
+  constructor(
+    public readonly log: Logger,
+    private readonly config: WattBoxConfig,
+  ) {
     this.cache = caching('memory', {
       ttl: 0, // No default ttl
       max: 0, // Infinite capacity
     });
-    this.session = axios.create({
-      httpAgent: new http.Agent({ keepAlive: true }),
-      baseURL: this.config.address,
-      responseType: 'document',
-      timeout: 5000,
-      headers: {
-        Authorization: `Basic ${Buffer.from(
-          `${this.config.username}:${this.config.password}`,
-        ).toString('base64')}`,
-      },
-    });
-    axiosRetry(this.session, { retries: 3 });
   }
 
   subscribe(outletId: string, func: (outlet: WattBoxOutlet) => void): Token {
@@ -194,7 +184,7 @@ export class WattBox {
             this.log.debug('[API] Fetching status from WattBox API');
             const { request } = await this.xmlRequest<WattBoxInfoResponse>({
               method: 'get',
-              url: '/wattbox_info.xml',
+              path: '/wattbox_info.xml',
             });
             return {
               information: {
@@ -261,7 +251,7 @@ export class WattBox {
     return this.lock.acquire(WattBox.OUTLET_STATUS_LOCK, async () => {
       await this.xmlRequest({
         method: 'get',
-        url: '/control.cgi',
+        path: '/control.cgi',
         params: {
           outlet: outletId,
           command,
@@ -271,11 +261,68 @@ export class WattBox {
     });
   }
 
-  private async xmlRequest<T extends xml2js.convertableToString = never, D = never>(
-    config: AxiosRequestConfig<D>,
-  ): Promise<T> {
-    const { data } = <AxiosResponse<T>>await this.session.request(config);
-    return parser.parseStringPromise(data);
+  private async xmlRequest<T extends xml2js.convertableToString = never>(config: {
+    method:
+      | 'DELETE'
+      | 'delete'
+      | 'GET'
+      | 'get'
+      | 'HEAD'
+      | 'head'
+      | 'PATCH'
+      | 'patch'
+      | 'POST'
+      | 'post'
+      | 'PUT'
+      | 'put'
+      | 'OPTIONS'
+      | 'options';
+    path: string;
+    params?: ParsedUrlQueryInput;
+  }): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const { host, port } = new URL(this.config.address);
+      const qs = config.params ? `?${querystring.stringify(config.params)}` : '';
+      const socket = net.createConnection(
+        {
+          host,
+          port: parseInt(port || '80'),
+        },
+        () => {
+          socket.write(
+            `${config.method!.toUpperCase()} ${config.path}${qs} HTTP/1.1\r\n` +
+              'Connection: keep-alive\r\n' +
+              `Authorization: Basic ${Buffer.from(`${this.config.username}:${this.config.password}`).toString('base64')}\r\n` +
+              '\r\n',
+          );
+          socket.end();
+        },
+      );
+
+      let data = Buffer.of();
+      socket.on('error', (error) => {
+        reject(error);
+      });
+      socket.on('data', (buffer: Buffer) => {
+        data = Buffer.concat([data, buffer]);
+      });
+      socket.on('end', () => {
+        try {
+          const { body, statusCode } = parseHttpResponse(data);
+          if (statusCode >= 200 && statusCode < 300) {
+            resolve(parser.parseStringPromise(body.toString()));
+          } else {
+            reject(
+              new Error(
+                `HTTP ${config.method.toUpperCase()} request to ${this.config.address}${config.path}${qs} failed with status ${statusCode}`,
+              ),
+            );
+          }
+        } catch (error: unknown) {
+          reject(error);
+        }
+      });
+    });
   }
 
   private get outletStatusCacheTtlMs(): number {
@@ -313,6 +360,61 @@ const parser = new xml2js.Parser({
     },
   ],
 });
+
+function parseHttpResponse(input: Buffer) {
+  const parser = new HTTPParser(HTTPParser.RESPONSE);
+  let complete = false;
+  let shouldKeepAlive: boolean;
+  let upgrade: boolean;
+  let statusCode: number;
+  let statusMessage: string;
+  let versionMajor: number;
+  let versionMinor: number;
+  let headers: string[] = [];
+  let trailers: string[] = [];
+  const bodyChunks: Buffer[] = [];
+
+  parser[HTTPParser.kOnHeadersComplete] = function (res) {
+    shouldKeepAlive = res.shouldKeepAlive;
+    upgrade = res.upgrade;
+    statusCode = res.statusCode;
+    statusMessage = res.statusMessage;
+    versionMajor = res.versionMajor;
+    versionMinor = res.versionMinor;
+    headers = res.headers;
+  };
+
+  parser[HTTPParser.kOnBody] = function (chunk, offset, length) {
+    bodyChunks.push(chunk.subarray(offset, offset + length));
+  };
+
+  parser[HTTPParser.kOnHeaders] = function (t) {
+    trailers = t;
+  };
+
+  parser[HTTPParser.kOnMessageComplete] = function () {
+    complete = true;
+  };
+
+  parser.execute(input);
+  parser.finish();
+
+  if (!complete) {
+    throw new Error('Could not parse HTTP response');
+  }
+
+  return {
+    shouldKeepAlive: shouldKeepAlive!,
+    upgrade: upgrade!,
+    statusCode: statusCode!,
+    statusMessage: statusMessage!,
+    versionMajor: versionMajor!,
+    versionMinor: versionMinor!,
+    headers,
+    body: Buffer.concat(bodyChunks),
+    trailers,
+  };
+}
 
 interface WattBoxInfoResponse {
   request: WattBoxInfoResponseBody;
